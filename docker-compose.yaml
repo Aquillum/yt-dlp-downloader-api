@@ -16,6 +16,7 @@ services:
       # Fast ASR default: keep YouTube's original small audio-only stream.
       DEFAULT_AUDIO_FORMAT: original
       DEFAULT_YT_FORMAT: "bestaudio[abr<=64]/bestaudio[abr<=96]/bestaudio/best"
+      DEFAULT_CAPTION_LANGS: "en,en-US,en-GB,de-DE,de"
       MAX_WORKERS: "2"
       MAX_DURATION_SECONDS: "21600"
       ENABLE_IMPERSONATION: "true"

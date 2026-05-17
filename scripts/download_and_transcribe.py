@@ -57,6 +57,32 @@ def transcript_json_to_md(json_path: Path, md_path: Path, source_url: str, audio
     md_path.write_text(md, encoding='utf-8')
 
 
+def wait_for_job(api_base: str, token: str, job_id: str, timeout: int, poll_interval: float) -> dict:
+    deadline = time.time() + timeout
+    last_status = None
+    while time.time() < deadline:
+        job = request_json('GET', f'{api_base.rstrip("/")}/v1/jobs/{job_id}', token)
+        progress = job.get('metadata', {}).get('progress_percent')
+        status_line = f"status={job['status']}"
+        if progress is not None:
+            status_line += f" progress={progress}%"
+        if status_line != last_status:
+            print(status_line)
+            last_status = status_line
+        if job['status'] == 'completed':
+            return job
+        if job['status'] == 'error':
+            raise RuntimeError(json.dumps(job, indent=2))
+        time.sleep(poll_interval)
+    raise TimeoutError('Timed out waiting for job')
+
+
+def create_job(api_base: str, token: str, payload: dict) -> dict:
+    job = request_json('POST', f'{api_base.rstrip("/")}/v1/downloads', token, payload)
+    print(f"Queued {payload['kind']} job: {job['id']}")
+    return job
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description='Download YouTube audio from homelab yt-dlp API and transcribe via local Parakeet.')
     parser.add_argument('url', help='YouTube URL')
@@ -68,6 +94,8 @@ def main() -> int:
     parser.add_argument('--poll-interval', type=float, default=5.0)
     parser.add_argument('--audio-format', default='original', choices=['original', 'm4a', 'mp3', 'wav', 'opus', 'flac'])
     parser.add_argument('--yt-format', default=os.getenv('YTDLP_YT_FORMAT', 'bestaudio[abr<=64]/bestaudio[abr<=96]/bestaudio/best'))
+    parser.add_argument('--preferred-langs', default=os.getenv('YTDLP_CAPTION_LANGS', 'en,en-US,en-GB,de-DE,de'))
+    parser.add_argument('--no-captions-first', action='store_true', help='Skip captions/subtitles and force audio+Parakeet ASR')
     args = parser.parse_args()
 
     if not args.token:
@@ -78,34 +106,40 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     started = time.perf_counter()
-    job = request_json('POST', f'{args.api_base.rstrip("/")}/v1/downloads', args.token, {
+    preferred_langs = [item.strip() for item in args.preferred_langs.split(',') if item.strip()]
+
+    if not args.no_captions_first:
+        try:
+            caption_job = create_job(args.api_base, args.token, {
+                'url': args.url,
+                'kind': 'captions',
+                'preferred_langs': preferred_langs,
+            })
+            caption_job = wait_for_job(args.api_base, args.token, caption_job['id'], args.timeout, args.poll_interval)
+            filename = caption_job.get('metadata', {}).get('filename') or f'{caption_job["id"]}.md'
+            md_path = out_dir / filename
+            download_file(f'{args.api_base.rstrip("/")}/v1/jobs/{caption_job["id"]}/file', args.token, md_path)
+            finished_at = time.perf_counter()
+            meta = caption_job.get('metadata', {})
+            print(f'Created Markdown transcript from captions: {md_path}')
+            print(f"Captions: language={meta.get('caption_language')} source={meta.get('caption_source')} format={meta.get('caption_format')}")
+            print(f'Timing: captions-total={finished_at - started:.1f}s')
+            return 0
+        except Exception as exc:
+            print(f'Captions path failed; falling back to audio+Parakeet: {exc}', file=sys.stderr)
+
+    job = create_job(args.api_base, args.token, {
         'url': args.url,
         'kind': 'audio',
         'audio_format': args.audio_format,
         'yt_format': args.yt_format,
     })
     job_id = job['id']
-    print(f'Queued job: {job_id}')
 
-    deadline = time.time() + args.timeout
-    last_status = None
-    while time.time() < deadline:
-        job = request_json('GET', f'{args.api_base.rstrip("/")}/v1/jobs/{job_id}', args.token)
-        progress = job.get('metadata', {}).get('progress_percent')
-        status_line = f"status={job['status']}"
-        if progress is not None:
-            status_line += f" progress={progress}%"
-        if status_line != last_status:
-            print(status_line)
-            last_status = status_line
-        if job['status'] == 'completed':
-            break
-        if job['status'] == 'error':
-            print(json.dumps(job, indent=2), file=sys.stderr)
-            return 1
-        time.sleep(args.poll_interval)
-    else:
-        print('Timed out waiting for job', file=sys.stderr)
+    try:
+        job = wait_for_job(args.api_base, args.token, job_id, args.timeout, args.poll_interval)
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
         return 1
 
     filename = job.get('metadata', {}).get('filename') or f'{job_id}.m4a'

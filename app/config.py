@@ -34,6 +34,12 @@ class Settings:
     )
     enable_impersonation: bool = field(default_factory=lambda: os.getenv('ENABLE_IMPERSONATION', 'true').lower() in {'1', 'true', 'yes'})
     youtube_player_clients: str = field(default_factory=lambda: os.getenv('YOUTUBE_PLAYER_CLIENTS', 'default,-tv_simply'))
+    default_caption_langs: list[str] = field(
+        default_factory=lambda: [
+            item.strip() for item in os.getenv('DEFAULT_CAPTION_LANGS', 'en,en-US,en-GB,de-DE,de').split(',')
+            if item.strip()
+        ]
+    )
 
 
 settings = Settings()

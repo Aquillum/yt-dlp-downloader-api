@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import re
@@ -8,7 +9,10 @@ import shutil
 import subprocess
 import traceback
 from pathlib import Path
+from urllib import error as urlerror
+from urllib import request as urlrequest
 from urllib.parse import urlparse
+from xml.etree import ElementTree
 
 import yt_dlp
 
@@ -17,6 +21,7 @@ from app.models import DownloadKind, DownloadRequest, JobStatus
 from app.store import JobStore
 
 _SAFE_NAME_RE = re.compile(r'[^A-Za-z0-9._-]+')
+_CAPTION_FORMAT_PREFERENCE = ('json3', 'vtt', 'srv3', 'ttml', 'xml')
 
 
 def safe_name(value: str | None, fallback: str) -> str:
@@ -57,6 +62,122 @@ def youtube_extractor_args() -> dict:
     if not clients:
         return {}
     return {'extractor_args': {'youtube': {'player_client': clients}}}
+
+
+def _lang_matches(candidate: str, preferred: str) -> bool:
+    candidate = candidate.lower()
+    preferred = preferred.lower()
+    return candidate == preferred or candidate.startswith(preferred + '-') or preferred.startswith(candidate + '-')
+
+
+def _caption_lang_order(info: dict, preferred_langs: list[str] | None = None) -> list[str]:
+    order: list[str] = []
+
+    def add(value: str | None) -> None:
+        if value and value not in order:
+            order.append(value)
+
+    video_lang = info.get('language') or info.get('language_preference')
+    if isinstance(video_lang, str) and video_lang.lower().startswith('de'):
+        for lang in ('de-DE', 'de'):
+            add(lang)
+    elif isinstance(video_lang, str) and video_lang.lower().startswith('en'):
+        for lang in ('en', 'en-US', 'en-GB'):
+            add(lang)
+    elif isinstance(video_lang, str):
+        add(video_lang)
+
+    for lang in preferred_langs or settings.default_caption_langs:
+        add(lang)
+    return order
+
+
+def _pick_caption_format(formats: list[dict]) -> dict | None:
+    downloadable = [fmt for fmt in formats if fmt.get('url')]
+    if not downloadable:
+        return None
+    for ext in _CAPTION_FORMAT_PREFERENCE:
+        for fmt in downloadable:
+            if (fmt.get('ext') or '').lower() == ext:
+                return fmt
+    return downloadable[0]
+
+
+def _select_from_caption_map(captions: dict, source: str, lang_order: list[str]) -> dict | None:
+    if not captions:
+        return None
+    keys = list(captions.keys())
+    ordered_keys: list[str] = []
+    for preferred in lang_order:
+        for key in keys:
+            if key not in ordered_keys and _lang_matches(key, preferred):
+                ordered_keys.append(key)
+    for key in keys:
+        if key not in ordered_keys:
+            ordered_keys.append(key)
+
+    for lang in ordered_keys:
+        fmt = _pick_caption_format(captions.get(lang) or [])
+        if fmt:
+            return {'language': lang, 'source': source, 'format': fmt}
+    return None
+
+
+def select_caption_track(info: dict, preferred_langs: list[str] | None = None) -> dict | None:
+    """Pick the best caption track, preferring manual subtitles over auto captions."""
+    lang_order = _caption_lang_order(info, preferred_langs)
+    return (
+        _select_from_caption_map(info.get('subtitles') or {}, 'subtitles', lang_order)
+        or _select_from_caption_map(info.get('automatic_captions') or {}, 'automatic_captions', lang_order)
+    )
+
+
+def _join_caption_lines(lines: list[str]) -> str:
+    parts: list[str] = []
+    previous = None
+    for line in lines:
+        cleaned = ' '.join(line.split())
+        if cleaned and cleaned != previous:
+            parts.append(cleaned)
+            previous = cleaned
+    return ' '.join(parts).strip()
+
+
+def caption_payload_to_text(payload: str, ext: str | None) -> str:
+    payload = payload.strip()
+    if not payload:
+        return ''
+
+    ext = (ext or '').lower()
+    if ext == 'json3' or payload.startswith('{'):
+        data = json.loads(payload)
+        parts = []
+        for event in data.get('events', []):
+            text = ''.join(seg.get('utf8', '') for seg in event.get('segs') or [])
+            text = ' '.join(text.split())
+            if text:
+                parts.append(text)
+        return _join_caption_lines(parts)
+
+    if ext in {'srv3', 'xml', 'ttml'} or payload.startswith('<'):
+        root = ElementTree.fromstring(payload)
+        parts = []
+        for node in root.iter():
+            tag = node.tag.lower().split('}', 1)[-1]
+            if tag in {'text', 'p'} and node.text:
+                parts.append(html.unescape(node.text.strip()))
+        return _join_caption_lines(parts)
+
+    lines = []
+    for line in payload.splitlines():
+        line = line.strip()
+        if not line or line == 'WEBVTT' or '-->' in line or line.isdigit() or line.startswith(('NOTE', 'STYLE', 'REGION')):
+            continue
+        line = re.sub(r'<[^>]+>', '', line)
+        line = html.unescape(line).strip()
+        if line:
+            lines.append(line)
+    return _join_caption_lines(lines)
 
 
 def base_ydl_options(job_id: str, store: JobStore) -> dict:
@@ -173,6 +294,54 @@ def download_info(job_id: str, req: DownloadRequest, store: JobStore, job_dir: P
     return info_path
 
 
+def download_captions(job_id: str, req: DownloadRequest, store: JobStore, job_dir: Path, info: dict) -> Path:
+    track = select_caption_track(info, req.preferred_langs)
+    if not track:
+        raise RuntimeError('No subtitles or automatic captions were exposed by YouTube')
+
+    fmt = track['format']
+    ext = (fmt.get('ext') or 'vtt').lower()
+    prefix = safe_name(req.filename_prefix or info.get('id'), 'captions')
+    raw_path = choose_output_path(job_dir, f'{prefix}.{track["language"]}.{track["source"]}', ext)
+
+    try:
+        with urlrequest.urlopen(fmt['url'], timeout=60) as response:
+            payload = response.read().decode('utf-8', 'ignore')
+    except urlerror.URLError as exc:
+        raise RuntimeError(f'Could not download caption payload: {exc}') from exc
+
+    raw_path.write_text(payload, encoding='utf-8')
+    text = caption_payload_to_text(payload, ext)
+    if not text:
+        raise RuntimeError(f'Caption payload was empty for language {track["language"]}')
+
+    txt_path = choose_output_path(job_dir, prefix, 'txt')
+    md_path = choose_output_path(job_dir, prefix, 'md')
+    txt_path.write_text(text + '\n', encoding='utf-8')
+    md_path.write_text(
+        '# Transcript\n\n'
+        f'Source: {req.url}\n'
+        f'Engine: yt-dlp {track["source"]}\n'
+        f'Language: {track["language"]}\n'
+        f'Raw captions: {raw_path.name}\n\n'
+        '## Text\n\n'
+        f'{text}\n',
+        encoding='utf-8',
+    )
+    store.update(
+        job_id,
+        metadata={
+            'caption_language': track['language'],
+            'caption_source': track['source'],
+            'caption_format': ext,
+            'raw_caption_filename': raw_path.name,
+            'txt_filename': txt_path.name,
+        },
+    )
+    store.append_log(job_id, f'Downloaded {track["source"]} captions: {track["language"]} ({ext})')
+    return md_path
+
+
 def download_audio(job_id: str, req: DownloadRequest, store: JobStore, job_dir: Path, info: dict) -> Path:
     prefix = safe_name(req.filename_prefix or info.get('id'), 'audio')
     opts = {
@@ -222,19 +391,24 @@ def run_job(job_id: str, req: DownloadRequest, store: JobStore) -> None:
 
         if req.kind == DownloadKind.info:
             output = download_info(job_id, req, store, job_dir, info)
+        elif req.kind in {DownloadKind.captions, DownloadKind.subtitles}:
+            output = download_captions(job_id, req, store, job_dir, info)
         elif req.kind == DownloadKind.video:
             output = download_video(job_id, req, store, job_dir, info)
         else:
             output = download_audio(job_id, req, store, job_dir, info)
 
         rel = output.relative_to(settings.download_dir)
+        current = store.get(job_id)
+        metadata = dict(current.metadata if current else {})
+        metadata.update({'filename': output.name, 'size': output.stat().st_size})
         store.update(
             job_id,
             status=JobStatus.completed,
             output_path=str(output),
             file_url=f'/v1/jobs/{job_id}/file',
             info_url=f'/v1/jobs/{job_id}/info',
-            metadata={'filename': output.name, 'size': output.stat().st_size},
+            metadata=metadata,
         )
         store.append_log(job_id, f'Completed: {rel}')
     except Exception as exc:

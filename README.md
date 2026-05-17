@@ -6,15 +6,15 @@ Goal:
 
 1. Hermes/Quillie on the VPS receives a YouTube link in chat, Telegram, or Discord.
 2. The VPS calls this downloader API over Tailnet / secure tunnel.
-3. This service downloads the audio/video from the Raspberry Pi's residential network using yt-dlp.
-4. The VPS fetches the resulting audio file.
-5. The VPS transcribes it with the existing local Parakeet endpoint and writes Markdown.
+3. This service first tries to fetch YouTube captions/subtitles with yt-dlp.
+4. If captions exist, the VPS fetches a finished Markdown transcript in seconds.
+5. If captions are unavailable, the service downloads audio/video from the Raspberry Pi's residential network and the VPS transcribes it with the local Parakeet endpoint.
 
-This project intentionally does only the download part. Transcription stays on the VPS.
+This project intentionally does captions/download only. ASR transcription stays on the VPS.
 
 ## Why this exists
 
-The previous transcript-only Flask app depended on YouTube caption endpoints. Those often fail with empty XML responses or bot checks. This service downloads audio with yt-dlp instead and is designed for agent automation.
+The previous transcript-only Flask app depended on YouTube caption endpoints. Those often fail with empty XML responses or bot checks. This service uses yt-dlp for captions first and audio download fallback, and is designed for agent automation.
 
 It borrows the useful ideas from `adepanges/yt-dlp-host`:
 
@@ -23,6 +23,7 @@ It borrows the useful ideas from `adepanges/yt-dlp-host`:
 - YouTube `player_client` workaround: `default,-tv_simply`
 - async jobs with status polling
 - file endpoint for the agent to download the result
+- captions/subtitles jobs that return cleaned Markdown transcripts
 
 I did not directly fork that repo because this use case is narrower: one trusted agent, one homelab downloader, audio-first, simple Bearer token auth, and fewer admin/key/quota features.
 
@@ -152,6 +153,24 @@ or:
 X-API-Key: <YTDLP_API_TOKEN>
 ```
 
+### Create captions/subtitles job
+
+This is the fastest path. It returns a cleaned Markdown transcript when YouTube exposes manual subtitles or automatic captions.
+Manual subtitles are preferred over automatic captions. Language selection prefers the video's detected language first; defaults are English first, then German (`en,en-US,en-GB,de-DE,de`). Override with `preferred_langs` when needed.
+
+```bash
+curl -sS -X POST 'http://127.0.0.1:8088/v1/downloads' \
+  -H "Authorization: Bearer ***" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "url": "https://www.youtube.com/watch?v=iXd0t60YmMw",
+    "kind": "captions",
+    "preferred_langs": ["en", "en-US", "en-GB", "de-DE", "de"]
+  }'
+```
+
+Use `"kind": "subtitles"` as an alias if you prefer that wording.
+
 ### Create audio download job
 
 ```bash
@@ -203,7 +222,19 @@ curl -L -o youtube_audio.webm \
 
 ## VPS / Hermes flow
 
-After the audio file is on the VPS, transcribe with the local Parakeet endpoint:
+The helper script tries captions first and falls back to audio download + Parakeet ASR automatically:
+
+```bash
+python3 scripts/download_and_transcribe.py 'https://www.youtube.com/watch?v=iXd0t60YmMw'
+```
+
+Force ASR fallback only:
+
+```bash
+python3 scripts/download_and_transcribe.py --no-captions-first 'https://www.youtube.com/watch?v=iXd0t60YmMw'
+```
+
+After an audio fallback file is on the VPS, transcribe with the local Parakeet endpoint:
 
 ```bash
 curl -sS \
@@ -227,6 +258,7 @@ Environment variables:
 | `YOUTUBE_COOKIES_FILE` | empty | Optional mounted browser cookies file. |
 | `DEFAULT_AUDIO_FORMAT` | `original` | Default output when request omits `audio_format`; avoids slow Pi-side transcoding. |
 | `DEFAULT_YT_FORMAT` | `bestaudio[abr<=64]/bestaudio[abr<=96]/bestaudio/best` | Prefer small audio-only streams for ASR. |
+| `DEFAULT_CAPTION_LANGS` | `en,en-US,en-GB,de-DE,de` | Caption language preference when the request omits `preferred_langs`. |
 | `MAX_WORKERS` | `2` | Concurrent jobs. Keep low on Pi 4. |
 | `MAX_DURATION_SECONDS` | `21600` | Reject videos longer than 6h by default. |
 | `ALLOWED_DOMAINS` | YouTube hosts | Comma-separated allowlist. |

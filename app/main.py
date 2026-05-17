@@ -14,7 +14,7 @@ from app.store import JobStore
 
 app = FastAPI(
     title='Homelab yt-dlp Downloader API',
-    description='Minimal API for Hermes/Quillie: download YouTube audio/video on a Raspberry Pi residential IP, then fetch the file from the VPS agent.',
+    description='Minimal API for Hermes/Quillie: fetch YouTube captions first, or download audio/video on a Raspberry Pi residential IP for VPS transcription fallback.',
     version='0.1.0',
 )
 store = JobStore()
