@@ -1,0 +1,28 @@
+services:
+  yt-dlp-downloader-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: yt-dlp-downloader-api
+    restart: unless-stopped
+    ports:
+      # Bind to localhost by default. Prefer Tailscale Serve/SSH tunnel/reverse proxy over exposing this publicly.
+      - "127.0.0.1:8088:8088"
+    environment:
+      # CHANGE THIS before first start. Use e.g.: openssl rand -hex 32
+      YTDLP_API_TOKEN: "change-me-generate-a-long-random-token"
+      DOWNLOAD_DIR: /data/downloads
+      STATE_DIR: /data/state
+      DEFAULT_AUDIO_FORMAT: m4a
+      MAX_WORKERS: "2"
+      MAX_DURATION_SECONDS: "21600"
+      ENABLE_IMPERSONATION: "true"
+      # yt-dlp YouTube workaround borrowed from adepanges/yt-dlp-host.
+      YOUTUBE_PLAYER_CLIENTS: "default,-tv_simply"
+      # Optional cookies file; uncomment the volume below too.
+      # YOUTUBE_COOKIES_FILE: /cookies/cookies.txt
+    volumes:
+      - ./data/downloads:/data/downloads
+      - ./data/state:/data/state
+      # Optional: export cookies from a logged-in browser as Netscape cookies.txt.
+      # - ./data/cookies.txt:/cookies/cookies.txt:ro
