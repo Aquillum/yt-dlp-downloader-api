@@ -74,6 +74,43 @@ Health check on the Pi:
 curl http://127.0.0.1:8088/health
 ```
 
+## Expose over Tailscale
+
+Recommended: keep Docker bound to localhost and expose the host-local port with Tailscale Serve on the Raspberry Pi.
+
+Do **not** make the downloader public unless you put strong auth in front of it. The API token remains required either way.
+
+On the Raspberry Pi:
+
+```bash
+# Check the container locally first
+curl http://127.0.0.1:8088/health
+
+# Inspect existing Serve routes before changing anything
+tailscale serve status --json || true
+
+# Serve this API over tailnet HTTPS on the Pi's MagicDNS hostname
+tailscale serve --bg --yes --https=443 --set-path / http://127.0.0.1:8088
+
+# Re-check the route
+tailscale serve status --json
+```
+
+From the VPS/agent machine, verify using the Pi's Tailnet hostname:
+
+```bash
+curl -sS https://<raspberry-pi-tailnet-name>/health
+```
+
+Example authenticated API call from the VPS:
+
+```bash
+curl -sS -X POST 'https://<raspberry-pi-tailnet-name>/v1/downloads' \
+  -H "Authorization: Bearer $YTDLP_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://www.youtube.com/watch?v=iXd0t60YmMw","kind":"audio","audio_format":"m4a"}'
+```
+
 ## Optional cookies
 
 If YouTube blocks the Pi anyway, export cookies from a logged-in browser as Netscape `cookies.txt`.
