@@ -185,8 +185,14 @@ def download_audio(job_id: str, req: DownloadRequest, store: JobStore, job_dir: 
         ydl.download([str(req.url)])
 
     source = newest_file(job_dir)
-    target = choose_output_path(job_dir, prefix, req.audio_format if req.audio_format != 'original' else source.suffix.lstrip('.'))
-    final = convert_audio(source, target, req.audio_format)
+    if req.audio_format == 'original':
+        target = choose_output_path(job_dir, prefix, source.suffix.lstrip('.') or 'audio')
+        if source.resolve() != target.resolve():
+            shutil.move(str(source), str(target))
+        final = target
+    else:
+        target = choose_output_path(job_dir, prefix, req.audio_format)
+        final = convert_audio(source, target, req.audio_format)
     return final
 
 

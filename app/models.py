@@ -23,7 +23,7 @@ class DownloadKind(str, Enum):
 class DownloadRequest(BaseModel):
     url: HttpUrl
     kind: DownloadKind = DownloadKind.audio
-    audio_format: Literal['original', 'm4a', 'mp3', 'wav', 'opus', 'flac'] = 'm4a'
+    audio_format: Literal['original', 'm4a', 'mp3', 'wav', 'opus', 'flac'] = 'original'
     video_format: Literal['mp4', 'mkv', 'webm'] = 'mp4'
     yt_format: str | None = Field(default=None, description='Optional yt-dlp format selector')
     filename_prefix: str | None = Field(default=None, max_length=80)

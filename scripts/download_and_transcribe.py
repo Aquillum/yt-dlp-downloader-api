@@ -61,6 +61,9 @@ def main() -> int:
     parser.add_argument('--out-dir', default='/home/ubuntu/workspace/youtube-transcriptions')
     parser.add_argument('--parakeet-endpoint', default=os.getenv('PARAKEET_ENDPOINT', 'http://127.0.0.1:5092/v1/audio/transcriptions'))
     parser.add_argument('--timeout', type=int, default=3600)
+    parser.add_argument('--poll-interval', type=float, default=5.0)
+    parser.add_argument('--audio-format', default='original', choices=['original', 'm4a', 'mp3', 'wav', 'opus', 'flac'])
+    parser.add_argument('--yt-format', default=os.getenv('YTDLP_YT_FORMAT', 'bestaudio[abr<=64]/bestaudio[abr<=96]/bestaudio/best'))
     args = parser.parse_args()
 
     if not args.token:
@@ -70,24 +73,33 @@ def main() -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    started = time.perf_counter()
     job = request_json('POST', f'{args.api_base.rstrip("/")}/v1/downloads', args.token, {
         'url': args.url,
         'kind': 'audio',
-        'audio_format': 'm4a',
+        'audio_format': args.audio_format,
+        'yt_format': args.yt_format,
     })
     job_id = job['id']
     print(f'Queued job: {job_id}')
 
     deadline = time.time() + args.timeout
+    last_status = None
     while time.time() < deadline:
         job = request_json('GET', f'{args.api_base.rstrip("/")}/v1/jobs/{job_id}', args.token)
-        print(f"status={job['status']}")
+        progress = job.get('metadata', {}).get('progress_percent')
+        status_line = f"status={job['status']}"
+        if progress is not None:
+            status_line += f" progress={progress}%"
+        if status_line != last_status:
+            print(status_line)
+            last_status = status_line
         if job['status'] == 'completed':
             break
         if job['status'] == 'error':
             print(json.dumps(job, indent=2), file=sys.stderr)
             return 1
-        time.sleep(3)
+        time.sleep(args.poll_interval)
     else:
         print('Timed out waiting for job', file=sys.stderr)
         return 1
@@ -95,14 +107,22 @@ def main() -> int:
     filename = job.get('metadata', {}).get('filename') or f'{job_id}.m4a'
     audio_path = out_dir / filename
     download_file(f'{args.api_base.rstrip("/")}/v1/jobs/{job_id}/file', args.token, audio_path)
-    print(f'Downloaded audio: {audio_path}')
+    downloaded_at = time.perf_counter()
+    print(f'Downloaded audio: {audio_path} ({audio_path.stat().st_size / 1024 / 1024:.1f} MiB)')
 
     json_path = audio_path.with_suffix(audio_path.suffix + '.transcript.json')
     md_path = audio_path.with_suffix('.md')
     call_parakeet(audio_path, json_path, args.parakeet_endpoint)
+    transcribed_at = time.perf_counter()
     transcript_json_to_md(json_path, md_path, args.url, audio_path)
     print(f'Created Markdown transcript: {md_path}')
     print(f'Raw Parakeet JSON: {json_path}')
+    print(
+        'Timing: '
+        f'download-job+file={downloaded_at - started:.1f}s, '
+        f'transcription={transcribed_at - downloaded_at:.1f}s, '
+        f'total={transcribed_at - started:.1f}s'
+    )
     return 0
 
 

@@ -108,7 +108,7 @@ Example authenticated API call from the VPS:
 curl -sS -X POST 'https://<raspberry-pi-tailnet-name>/v1/downloads' \
   -H "Authorization: Bearer $YTDLP_API_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"url":"https://www.youtube.com/watch?v=iXd0t60YmMw","kind":"audio","audio_format":"m4a"}'
+  -d '{"url":"https://www.youtube.com/watch?v=iXd0t60YmMw","kind":"audio","audio_format":"original"}'
 ```
 
 ## Optional cookies
@@ -161,7 +161,8 @@ curl -sS -X POST 'http://127.0.0.1:8088/v1/downloads' \
   -d '{
     "url": "https://www.youtube.com/watch?v=iXd0t60YmMw",
     "kind": "audio",
-    "audio_format": "m4a"
+    "audio_format": "original",
+    "yt_format": "bestaudio[abr<=64]/bestaudio[abr<=96]/bestaudio/best"
   }'
 ```
 
@@ -195,7 +196,7 @@ When complete, the job contains:
 ### Download file to VPS
 
 ```bash
-curl -L -o youtube_audio.m4a \
+curl -L -o youtube_audio.webm \
   -H "Authorization: Bearer $YTDLP_API_TOKEN" \
   'http://pi-tailnet-host:8088/v1/jobs/<job_id>/file'
 ```
@@ -207,7 +208,7 @@ After the audio file is on the VPS, transcribe with the local Parakeet endpoint:
 ```bash
 curl -sS \
   -X POST 'http://127.0.0.1:5092/v1/audio/transcriptions' \
-  -F 'file=@youtube_audio.m4a' \
+  -F 'file=@youtube_audio.webm' \
   -F 'model=parakeet' \
   -F 'response_format=json'
 ```
@@ -224,7 +225,8 @@ Environment variables:
 | `DOWNLOAD_DIR` | `/data/downloads` | Download output root. |
 | `STATE_DIR` | `/data/state` | Persistent job JSON state. |
 | `YOUTUBE_COOKIES_FILE` | empty | Optional mounted browser cookies file. |
-| `DEFAULT_AUDIO_FORMAT` | `m4a` | Default output when request omits `audio_format`. |
+| `DEFAULT_AUDIO_FORMAT` | `original` | Default output when request omits `audio_format`; avoids slow Pi-side transcoding. |
+| `DEFAULT_YT_FORMAT` | `bestaudio[abr<=64]/bestaudio[abr<=96]/bestaudio/best` | Prefer small audio-only streams for ASR. |
 | `MAX_WORKERS` | `2` | Concurrent jobs. Keep low on Pi 4. |
 | `MAX_DURATION_SECONDS` | `21600` | Reject videos longer than 6h by default. |
 | `ALLOWED_DOMAINS` | YouTube hosts | Comma-separated allowlist. |

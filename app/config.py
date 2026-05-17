@@ -17,9 +17,11 @@ class Settings:
     cookies_file: str = field(default_factory=lambda: os.getenv('YOUTUBE_COOKIES_FILE', '').strip())
     max_workers: int = field(default_factory=lambda: int(os.getenv('MAX_WORKERS', '2')))
     cleanup_after_hours: int = field(default_factory=lambda: int(os.getenv('CLEANUP_AFTER_HOURS', '24')))
-    default_audio_format: str = field(default_factory=lambda: os.getenv('DEFAULT_AUDIO_FORMAT', 'm4a'))
+    # Default to the original YouTube audio container to avoid slow Raspberry Pi transcoding.
+    default_audio_format: str = field(default_factory=lambda: os.getenv('DEFAULT_AUDIO_FORMAT', 'original'))
     default_video_format: str = field(default_factory=lambda: os.getenv('DEFAULT_VIDEO_FORMAT', 'mp4'))
-    default_yt_format: str = field(default_factory=lambda: os.getenv('DEFAULT_YT_FORMAT', 'bestaudio/best'))
+    # Prefer small audio-only streams for ASR. Parakeet/ffmpeg can decode webm/opus.
+    default_yt_format: str = field(default_factory=lambda: os.getenv('DEFAULT_YT_FORMAT', 'bestaudio[abr<=64]/bestaudio[abr<=96]/bestaudio/best'))
     max_duration_seconds: int = field(default_factory=lambda: int(os.getenv('MAX_DURATION_SECONDS', '21600')))
     allow_playlists: bool = field(default_factory=lambda: os.getenv('ALLOW_PLAYLISTS', 'false').lower() in {'1', 'true', 'yes'})
     allowed_domains: set[str] = field(
