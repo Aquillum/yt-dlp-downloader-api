@@ -90,8 +90,8 @@ curl http://127.0.0.1:8088/health
 # Inspect existing Serve routes before changing anything
 tailscale serve status --json || true
 
-# Serve this API over tailnet HTTPS on the Pi's MagicDNS hostname
-tailscale serve --bg --yes --https=443 --set-path / http://127.0.0.1:8088
+# Serve this API over tailnet HTTPS on the Pi's MagicDNS hostname, using the current non-standard HTTPS port.
+tailscale serve --bg --yes --https=8443 --set-path / http://127.0.0.1:8088
 
 # Re-check the route
 tailscale serve status --json

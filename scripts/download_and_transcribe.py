@@ -21,7 +21,14 @@ _ENV_FILES = (
 
 
 def load_env_files() -> None:
-    """Load simple KEY=VALUE lines without overriding the live environment."""
+    """Load simple KEY=VALUE lines.
+
+    The central Hermes env file is the durable source of truth for this workflow;
+    let it refresh inherited gateway/TUI env values for YTDLP_* and PARAKEET_ENDPOINT.
+    Explicit CLI args still win because argparse receives them after this step.
+    """
+    refreshable_keys = {'YTDLP_DOWNLOADER_BASE', 'YTDLP_API_TOKEN', 'YTDLP_CAPTION_LANGS', 'PARAKEET_ENDPOINT'}
+    central_env_files = {Path.home() / '.hermes' / '.env', Path('/home/ubuntu/.hermes/.env')}
     for env_file in _ENV_FILES:
         try:
             lines = env_file.read_text(encoding='utf-8').splitlines()
@@ -29,6 +36,7 @@ def load_env_files() -> None:
             continue
         except OSError:
             continue
+        allow_refresh = env_file in central_env_files
         for line in lines:
             stripped = line.strip()
             if not stripped or stripped.startswith('#') or '=' not in stripped:
@@ -36,7 +44,7 @@ def load_env_files() -> None:
             key, value = stripped.split('=', 1)
             key = key.strip()
             value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
+            if key and (key not in os.environ or (allow_refresh and key in refreshable_keys)):
                 os.environ[key] = value
 
 
