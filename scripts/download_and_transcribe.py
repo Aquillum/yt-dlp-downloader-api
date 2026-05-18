@@ -11,6 +11,34 @@ import urllib.request
 from pathlib import Path
 
 
+_ENV_FILES = (
+    Path.home() / '.hermes' / '.env',
+    Path('/home/ubuntu/.hermes/.env'),
+    Path.cwd() / '.env',
+    Path(__file__).resolve().parents[1] / '.env',
+)
+
+
+def load_env_files() -> None:
+    """Load simple KEY=VALUE lines without overriding the live environment."""
+    for env_file in _ENV_FILES:
+        try:
+            lines = env_file.read_text(encoding='utf-8').splitlines()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#') or '=' not in stripped:
+                continue
+            key, value = stripped.split('=', 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
 def request_json(method: str, url: str, token: str, payload: dict | None = None) -> dict:
     data = None
     headers = {'Authorization': f'Bearer {token}'}
@@ -84,6 +112,8 @@ def create_job(api_base: str, token: str, payload: dict) -> dict:
 
 
 def main() -> int:
+    load_env_files()
+
     parser = argparse.ArgumentParser(description='Download YouTube audio from homelab yt-dlp API and transcribe via local Parakeet.')
     parser.add_argument('url', help='YouTube URL')
     parser.add_argument('--api-base', default=os.getenv('YTDLP_DOWNLOADER_BASE', 'http://127.0.0.1:8088'))
