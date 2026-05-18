@@ -1,6 +1,6 @@
 import unittest
 
-from app.downloader import caption_payload_to_text, select_caption_track
+from app.downloader import build_transcript_markdown, caption_payload_to_text, format_duration, select_caption_track
 
 
 class CaptionSelectionTests(unittest.TestCase):
@@ -49,6 +49,37 @@ class CaptionSelectionTests(unittest.TestCase):
         payload = '{"events":[{"segs":[{"utf8":"Hello "},{"utf8":"world"}]},{"segs":[{"utf8":"\\n"}]},{"segs":[{"utf8":"Again"}]}]}'
 
         self.assertEqual(caption_payload_to_text(payload, 'json3'), 'Hello world Again')
+
+    def test_format_duration_prints_hms(self):
+        self.assertEqual(format_duration(65), '00:01:05')
+        self.assertEqual(format_duration(3661), '01:01:01')
+        self.assertEqual(format_duration(None), 'unknown')
+
+    def test_build_transcript_markdown_includes_video_metadata_header(self):
+        info = {
+            'title': 'Why LLM Wiki? 🧠 Future Of Knowledge For Agentic AI & Humans',
+            'channel': 'Wanderloots',
+            'duration': 929,
+        }
+
+        md = build_transcript_markdown(
+            source_url='https://www.youtube.com/watch?v=n4EVksU_EOs',
+            info=info,
+            engine='yt-dlp automatic_captions',
+            language='en-orig',
+            raw_captions='n4EVksU_EOs.en-orig.automatic_captions.json3',
+            text='Transcript body.',
+        )
+
+        self.assertIn('# Why LLM Wiki? 🧠 Future Of Knowledge For Agentic AI & Humans\n', md)
+        self.assertIn('Source: https://www.youtube.com/watch?v=n4EVksU_EOs\n', md)
+        self.assertIn('Title: Why LLM Wiki? 🧠 Future Of Knowledge For Agentic AI & Humans\n', md)
+        self.assertIn('Channel: Wanderloots\n', md)
+        self.assertIn('Duration: 00:15:29\n', md)
+        self.assertIn('Engine: yt-dlp automatic_captions\n', md)
+        self.assertIn('Language: en-orig\n', md)
+        self.assertIn('Raw captions: n4EVksU_EOs.en-orig.automatic_captions.json3\n', md)
+        self.assertTrue(md.endswith('## Text\n\nTranscript body.\n'))
 
 
 if __name__ == '__main__':

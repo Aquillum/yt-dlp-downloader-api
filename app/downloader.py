@@ -132,6 +132,49 @@ def select_caption_track(info: dict, preferred_langs: list[str] | None = None) -
     )
 
 
+def format_duration(seconds: float | int | None) -> str:
+    if seconds is None:
+        return 'unknown'
+    try:
+        total = int(float(seconds))
+    except (TypeError, ValueError):
+        return 'unknown'
+    if total < 0:
+        return 'unknown'
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f'{hours:02d}:{minutes:02d}:{secs:02d}'
+
+
+def video_channel(info: dict) -> str:
+    return str(info.get('channel') or info.get('uploader') or info.get('creator') or 'unknown')
+
+
+def build_transcript_markdown(
+    *,
+    source_url: str,
+    info: dict,
+    engine: str,
+    language: str,
+    raw_captions: str | None,
+    text: str,
+) -> str:
+    title = str(info.get('title') or 'Transcript')
+    raw_line = f'Raw captions: {raw_captions}\n' if raw_captions else ''
+    return (
+        f'# {title}\n\n'
+        f'Source: {source_url}\n'
+        f'Title: {title}\n'
+        f'Channel: {video_channel(info)}\n'
+        f'Duration: {format_duration(info.get("duration"))}\n'
+        f'Engine: {engine}\n'
+        f'Language: {language}\n'
+        f'{raw_line}\n'
+        '## Text\n\n'
+        f'{text.strip()}\n'
+    )
+
+
 def _join_caption_lines(lines: list[str]) -> str:
     parts: list[str] = []
     previous = None
@@ -239,6 +282,12 @@ def preflight_info(url: str, req: DownloadRequest, store: JobStore, job_id: str)
         title=info.get('title'),
         extractor=info.get('extractor_key') or info.get('extractor'),
         duration=duration or None,
+        metadata={
+            'title': info.get('title'),
+            'channel': video_channel(info),
+            'duration': duration or None,
+            'print_line': f'{video_channel(info)} - {duration or "unknown"} - {info.get("title") or "unknown"}',
+        },
     )
     return info
 
@@ -319,13 +368,14 @@ def download_captions(job_id: str, req: DownloadRequest, store: JobStore, job_di
     md_path = choose_output_path(job_dir, prefix, 'md')
     txt_path.write_text(text + '\n', encoding='utf-8')
     md_path.write_text(
-        '# Transcript\n\n'
-        f'Source: {req.url}\n'
-        f'Engine: yt-dlp {track["source"]}\n'
-        f'Language: {track["language"]}\n'
-        f'Raw captions: {raw_path.name}\n\n'
-        '## Text\n\n'
-        f'{text}\n',
+        build_transcript_markdown(
+            source_url=str(req.url),
+            info=info,
+            engine=f'yt-dlp {track["source"]}',
+            language=track['language'],
+            raw_captions=raw_path.name,
+            text=text,
+        ),
         encoding='utf-8',
     )
     store.update(
@@ -336,6 +386,10 @@ def download_captions(job_id: str, req: DownloadRequest, store: JobStore, job_di
             'caption_format': ext,
             'raw_caption_filename': raw_path.name,
             'txt_filename': txt_path.name,
+            'title': info.get('title'),
+            'channel': video_channel(info),
+            'duration': info.get('duration'),
+            'print_line': f'{video_channel(info)} - {info.get("duration") or "unknown"} - {info.get("title") or "unknown"}',
         },
     )
     store.append_log(job_id, f'Downloaded {track["source"]} captions: {track["language"]} ({ext})')
@@ -401,7 +455,14 @@ def run_job(job_id: str, req: DownloadRequest, store: JobStore) -> None:
         rel = output.relative_to(settings.download_dir)
         current = store.get(job_id)
         metadata = dict(current.metadata if current else {})
-        metadata.update({'filename': output.name, 'size': output.stat().st_size})
+        metadata.update({
+            'filename': output.name,
+            'size': output.stat().st_size,
+            'title': info.get('title'),
+            'channel': video_channel(info),
+            'duration': info.get('duration'),
+            'print_line': f'{video_channel(info)} - {info.get("duration") or "unknown"} - {info.get("title") or "unknown"}',
+        })
         store.update(
             job_id,
             status=JobStatus.completed,

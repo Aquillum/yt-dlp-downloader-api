@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -39,6 +40,61 @@ def load_env_files() -> None:
                 os.environ[key] = value
 
 
+def format_duration(seconds: float | int | None) -> str:
+    if seconds is None:
+        return 'unknown'
+    try:
+        total = int(float(seconds))
+    except (TypeError, ValueError):
+        return 'unknown'
+    if total < 0:
+        return 'unknown'
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f'{hours:02d}:{minutes:02d}:{secs:02d}'
+
+
+def normalized_title_filename(title: str, fallback: str = 'youtube-transcript') -> str:
+    title = (title or fallback).strip().lower()
+    title = title.translate(str.maketrans({'ä': 'ae', 'ö': 'oe', 'ü': 'ue', 'ß': 'ss'}))
+    title = re.sub(r'[^a-z0-9]+', '-', title)
+    title = re.sub(r'-{2,}', '-', title).strip('-')
+    return (title[:140].strip('-') or fallback)
+
+
+def unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for idx in range(2, 1000):
+        candidate = path.with_name(f'{path.stem}-{idx}{path.suffix}')
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(f'Could not find unique filename for {path}')
+
+
+def job_video_info(job: dict) -> dict:
+    meta = job.get('metadata') or {}
+    return {
+        'title': job.get('title') or meta.get('title') or 'Transcript',
+        'channel': meta.get('channel') or 'unknown',
+        'duration': job.get('duration') or meta.get('duration'),
+    }
+
+
+def video_print_line(info: dict) -> str:
+    return f'{info.get("channel") or "unknown"} - {info.get("duration") or "unknown"} - {info.get("title") or "unknown"}'
+
+
+def markdown_path_for_info(out_dir: Path, info: dict, fallback: str = 'youtube-transcript') -> Path:
+    slug = normalized_title_filename(info.get('title') or fallback, fallback=fallback)
+    return unique_path(out_dir / f'{slug}.md')
+
+
+def markdown_path_for_job(out_dir: Path, job: dict, fetched_info: dict | None = None) -> Path:
+    info = merge_video_info(job, fetched_info)
+    return markdown_path_for_info(out_dir, info, fallback=job.get('id') or 'youtube-transcript')
+
+
 def request_json(method: str, url: str, token: str, payload: dict | None = None) -> dict:
     data = None
     headers = {'Authorization': f'Bearer {token}'}
@@ -60,6 +116,57 @@ def download_file(url: str, token: str, output: Path) -> None:
         output.write_bytes(response.read())
 
 
+def download_json(url: str, token: str) -> dict:
+    req = urllib.request.Request(url, headers={'Authorization': f'Bearer {token}'})
+    with urllib.request.urlopen(req, timeout=3600) as response:
+        return json.loads(response.read().decode('utf-8'))
+
+
+def fetch_video_info(api_base: str, token: str, url: str, timeout: int, poll_interval: float) -> dict:
+    job = create_job(api_base, token, {'url': url, 'kind': 'info'})
+    job = wait_for_job(api_base, token, job['id'], timeout, poll_interval)
+    return download_json(f'{api_base.rstrip("/")}/v1/jobs/{job["id"]}/file', token)
+
+
+def merge_video_info(job: dict, fetched_info: dict | None = None) -> dict:
+    info = job_video_info(job)
+    if fetched_info:
+        info.update({
+            'title': fetched_info.get('title') or info.get('title'),
+            'channel': fetched_info.get('channel') or fetched_info.get('uploader') or fetched_info.get('creator') or info.get('channel'),
+            'duration': fetched_info.get('duration') or info.get('duration'),
+        })
+    return info
+
+
+def rewrite_markdown_header(
+    md_path: Path,
+    *,
+    source_url: str,
+    info: dict,
+    engine: str,
+    language: str,
+    raw_captions: str | None = None,
+) -> None:
+    current = md_path.read_text(encoding='utf-8')
+    body = current.split('## Text', 1)[1].strip() if '## Text' in current else current.strip()
+    raw_line = f'Raw captions: {raw_captions}\n' if raw_captions else ''
+    title = info.get('title') or 'Transcript'
+    updated = (
+        f'# {title}\n\n'
+        f'Source: {source_url}\n'
+        f'Title: {title}\n'
+        f'Channel: {info.get("channel") or "unknown"}\n'
+        f'Duration: {format_duration(info.get("duration"))}\n'
+        f'Engine: {engine}\n'
+        f'Language: {language}\n'
+        f'{raw_line}\n'
+        '## Text\n\n'
+        f'{body}\n'
+    )
+    md_path.write_text(updated, encoding='utf-8')
+
+
 def call_parakeet(audio_path: Path, out_json: Path, endpoint: str) -> None:
     # Use curl for multipart because Python stdlib has no pleasant multipart encoder.
     import subprocess
@@ -75,13 +182,25 @@ def call_parakeet(audio_path: Path, out_json: Path, endpoint: str) -> None:
     out_json.write_text(result.stdout, encoding='utf-8')
 
 
-def transcript_json_to_md(json_path: Path, md_path: Path, source_url: str, audio_path: Path) -> None:
+def transcript_json_to_md(json_path: Path, md_path: Path, source_url: str, audio_path: Path, info: dict) -> None:
     data = json.loads(json_path.read_text(encoding='utf-8'))
     if isinstance(data, dict):
         text = data.get('text') or data.get('transcript') or data.get('content') or json.dumps(data, ensure_ascii=False, indent=2)
     else:
         text = str(data)
-    md = f'# Transcript\n\nSource: {source_url}\nAudio: {audio_path}\nEngine: Parakeet FastAPI\n\n## Text\n\n{text.strip()}\n'
+    title = info.get('title') or 'Transcript'
+    md = (
+        f'# {title}\n\n'
+        f'Source: {source_url}\n'
+        f'Title: {title}\n'
+        f'Channel: {info.get("channel") or "unknown"}\n'
+        f'Duration: {format_duration(info.get("duration"))}\n'
+        'Engine: Parakeet FastAPI\n'
+        'Language: ASR\n'
+        f'Audio: {audio_path}\n\n'
+        '## Text\n\n'
+        f'{text.strip()}\n'
+    )
     md_path.write_text(md, encoding='utf-8')
 
 
@@ -137,6 +256,12 @@ def main() -> int:
 
     started = time.perf_counter()
     preferred_langs = [item.strip() for item in args.preferred_langs.split(',') if item.strip()]
+    try:
+        fetched_info = fetch_video_info(args.api_base, args.token, args.url, args.timeout, args.poll_interval)
+        print(f'Video: {video_print_line(merge_video_info({}, fetched_info))}')
+    except Exception as exc:
+        fetched_info = None
+        print(f'Video metadata lookup failed; continuing without channel/title enrichment: {exc}', file=sys.stderr)
 
     if not args.no_captions_first:
         try:
@@ -149,8 +274,21 @@ def main() -> int:
             filename = caption_job.get('metadata', {}).get('filename') or f'{caption_job["id"]}.md'
             md_path = out_dir / filename
             download_file(f'{args.api_base.rstrip("/")}/v1/jobs/{caption_job["id"]}/file', args.token, md_path)
+            final_md_path = markdown_path_for_job(out_dir, caption_job, fetched_info)
+            if final_md_path != md_path:
+                md_path.rename(final_md_path)
+                md_path = final_md_path
             finished_at = time.perf_counter()
             meta = caption_job.get('metadata', {})
+            info = merge_video_info(caption_job, fetched_info)
+            rewrite_markdown_header(
+                md_path,
+                source_url=args.url,
+                info=info,
+                engine=f'yt-dlp {meta.get("caption_source") or "captions"}',
+                language=meta.get('caption_language') or 'unknown',
+                raw_captions=meta.get('raw_caption_filename'),
+            )
             print(f'Created Markdown transcript from captions: {md_path}')
             print(f"Captions: language={meta.get('caption_language')} source={meta.get('caption_source')} format={meta.get('caption_format')}")
             print(f'Timing: captions-total={finished_at - started:.1f}s')
@@ -172,6 +310,7 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
+    info = merge_video_info(job, fetched_info)
     filename = job.get('metadata', {}).get('filename') or f'{job_id}.m4a'
     audio_path = out_dir / filename
     download_file(f'{args.api_base.rstrip("/")}/v1/jobs/{job_id}/file', args.token, audio_path)
@@ -179,10 +318,10 @@ def main() -> int:
     print(f'Downloaded audio: {audio_path} ({audio_path.stat().st_size / 1024 / 1024:.1f} MiB)')
 
     json_path = audio_path.with_suffix(audio_path.suffix + '.transcript.json')
-    md_path = audio_path.with_suffix('.md')
+    md_path = markdown_path_for_job(out_dir, job, fetched_info)
     call_parakeet(audio_path, json_path, args.parakeet_endpoint)
     transcribed_at = time.perf_counter()
-    transcript_json_to_md(json_path, md_path, args.url, audio_path)
+    transcript_json_to_md(json_path, md_path, args.url, audio_path, info)
     print(f'Created Markdown transcript: {md_path}')
     print(f'Raw Parakeet JSON: {json_path}')
     print(

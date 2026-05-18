@@ -171,6 +171,28 @@ curl -sS -X POST 'http://127.0.0.1:8088/v1/downloads' \
 
 Use `"kind": "subtitles"` as an alias if you prefer that wording.
 
+The generated Markdown header includes video metadata equivalent to:
+
+```bash
+yt-dlp --print "%(channel)s - %(duration)s - %(title)s" "YOUR_VIDEO_URL"
+```
+
+Example header:
+
+```markdown
+# Why LLM Wiki? 🧠 Future Of Knowledge For Agentic AI & Humans
+
+Source: https://www.youtube.com/watch?v=n4EVksU_EOs
+Title: Why LLM Wiki? 🧠 Future Of Knowledge For Agentic AI & Humans
+Channel: Wanderloots
+Duration: 00:11:18
+Engine: yt-dlp automatic_captions
+Language: en-orig
+Raw captions: n4EVksU_EOs.en-orig.automatic_captions.json3
+
+## Text
+```
+
 ### Create audio download job
 
 ```bash
@@ -227,6 +249,8 @@ The helper script tries captions first and falls back to audio download + Parake
 ```bash
 python3 scripts/download_and_transcribe.py 'https://www.youtube.com/watch?v=iXd0t60YmMw'
 ```
+
+The script also runs a quick `kind=info` metadata job first, prints the `channel - duration - title` line, writes the extended Markdown header, and saves the final `.md` under a normalized YouTube-title filename.
 
 Force ASR fallback only:
 
